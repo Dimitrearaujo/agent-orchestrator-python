@@ -1,0 +1,254 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax check — todos os arquivos .py
+        run: |
+          python -m py_compile orchestrator/__init__.py
+          python -m py_compile orchestrator/agent.py
+          python -m py_compile orchestrator/memory.py
+          python -m py_compile orchestrator/router.py
+          python -m py_compile orchestrator/handoff.py
+          python -m py_compile orchestrator/hitl.py
+          python -m py_compile orchestrator/pipeline.py
+          python -m py_compile main.py
+          echo "Syntax check OK"
+
+      - name: Test — Agent
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from orchestrator.agent import Agent
+
+          a = Agent('teste', 'testador', 'Você é um agente de teste', confidence=0.9)
+          assert a.name == 'teste'
+          assert a.role == 'testador'
+          assert a.confidence == 0.9
+
+          result = a.run('olá')
+          assert 'response' in result
+          assert 'confidence' in result
+          assert isinstance(result['response'], str)
+          assert len(result['response']) > 0
+
+          try:
+              Agent('', 'role', 'prompt')
+              assert False, 'Deveria ter lançado ValueError'
+          except ValueError:
+              pass
+
+          try:
+              Agent('nome', 'role', 'prompt', confidence=1.5)
+              assert False, 'Deveria ter lançado ValueError'
+          except ValueError:
+              pass
+
+          print('Agent: OK')
+          "
+
+      - name: Test — SessionMemory
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from orchestrator.memory import SessionMemory
+
+          mem = SessionMemory()
+          sid = mem.create_session()
+          assert mem.session_exists(sid)
+
+          # add e get
+          mem.add(sid, 'user', 'Olá')
+          msgs = mem.get(sid)
+          assert len(msgs) == 1
+          assert msgs[0]['role'] == 'user'
+          assert msgs[0]['content'] == 'Olá'
+
+          mem.add(sid, 'assistant', 'Oi!')
+          assert len(mem.get(sid)) == 2
+
+          # clear
+          mem.clear(sid)
+          assert mem.get(sid) == []
+
+          # sessão inexistente retorna lista vazia
+          assert mem.get('inexistente') == []
+
+          print('SessionMemory: OK')
+          "
+
+      - name: Test — Router
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from orchestrator.agent import Agent
+          from orchestrator.router import Router
+
+          vendas = Agent('vendas', 'vendedor', 'sys', confidence=0.9)
+          suporte = Agent('suporte', 'suporte', 'sys', confidence=0.85)
+          financeiro = Agent('financeiro', 'financeiro', 'sys', confidence=0.88)
+
+          router = Router([vendas, suporte, financeiro], default_agent=suporte)
+          router.register_keywords('vendas', ['preço', 'plano', 'contratar'])
+          router.register_keywords('suporte', ['erro', 'bug', 'problema'])
+          router.register_keywords('financeiro', ['boleto', 'pagamento', 'fatura'])
+
+          # 'preço' -> vendas
+          result = router.route('Qual o preço do plano?')
+          assert result.name == 'vendas', f'Esperado vendas, got {result.name}'
+
+          # 'erro' -> suporte
+          result = router.route('Tenho um erro no sistema')
+          assert result.name == 'suporte', f'Esperado suporte, got {result.name}'
+
+          # 'boleto' -> financeiro
+          result = router.route('Preciso do boleto de pagamento')
+          assert result.name == 'financeiro', f'Esperado financeiro, got {result.name}'
+
+          # sem keyword -> default (suporte)
+          result = router.route('bom dia')
+          assert result.name == 'suporte', f'Esperado suporte (default), got {result.name}'
+
+          print('Router: OK')
+          "
+
+      - name: Test — HandoffManager
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from orchestrator.agent import Agent
+          from orchestrator.memory import SessionMemory
+          from orchestrator.handoff import HandoffManager
+
+          mem = SessionMemory()
+          sid = mem.create_session('sess-handoff')
+          mem.add(sid, 'user', 'Preciso de ajuda')
+          mem.add(sid, 'assistant', 'Claro!')
+
+          hm = HandoffManager(mem)
+          ag1 = Agent('vendas', 'vendedor', 'sys')
+          ag2 = Agent('suporte', 'suporte', 'sys')
+
+          record = hm.transfer(ag1, ag2, sid, reason='Teste de handoff')
+
+          assert record['from_agent'] == 'vendas'
+          assert record['to_agent'] == 'suporte'
+          assert record['session_id'] == sid
+          assert record['context_size'] == 2  # 2 msgs antes do handoff
+
+          # O handoff adiciona nota de sistema à memória
+          msgs = mem.get(sid)
+          assert any('HANDOFF' in m['content'] for m in msgs)
+
+          # Log deve ter 1 entrada
+          assert len(hm.get_log()) == 1
+
+          print('HandoffManager: OK')
+          "
+
+      - name: Test — HITLChecker
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from orchestrator.hitl import HITLChecker
+
+          hitl = HITLChecker(confidence_threshold=0.75, sensitive_keywords=['cancelar contrato'])
+
+          # Confiança baixa -> flag True
+          result = hitl.check('resposta qualquer', confidence=0.5)
+          assert result['hitl_required'] == True
+          assert '0.50' in result['reason']
+
+          # Confiança alta -> flag False
+          result = hitl.check('resposta qualquer', confidence=0.9)
+          assert result['hitl_required'] == False
+          assert result['reason'] == 'auto-approved'
+
+          # Confiança alta mas keyword sensível -> flag True
+          result = hitl.check('ok', confidence=0.95, user_input='quero cancelar contrato')
+          assert result['hitl_required'] == True
+          assert 'cancelar contrato' in result['reason']
+
+          # Exatamente no threshold -> aprovado
+          result = hitl.check('ok', confidence=0.75)
+          assert result['hitl_required'] == False
+
+          print('HITLChecker: OK')
+          "
+
+      - name: Test — Pipeline
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from orchestrator.agent import Agent
+          from orchestrator.memory import SessionMemory
+          from orchestrator.router import Router
+          from orchestrator.handoff import HandoffManager
+          from orchestrator.hitl import HITLChecker
+          from orchestrator.pipeline import Pipeline
+
+          # Monta 3 agentes
+          vendas = Agent('vendas', 'vendedor', 'sys', confidence=0.92)
+          suporte = Agent('suporte', 'suporte', 'sys', confidence=0.85)
+          financeiro = Agent('financeiro', 'financeiro', 'sys', confidence=0.88)
+
+          router = Router([vendas, suporte, financeiro], default_agent=suporte)
+          router.register_keywords('vendas', ['preço', 'plano'])
+          router.register_keywords('suporte', ['erro', 'bug'])
+          router.register_keywords('financeiro', ['boleto', 'pagamento'])
+
+          memory = SessionMemory()
+          handoff_manager = HandoffManager(memory)
+          hitl_checker = HITLChecker(confidence_threshold=0.75)
+
+          pipeline = Pipeline(router, memory, handoff_manager, hitl_checker)
+
+          # Executa pipeline
+          result = pipeline.run('Qual o preço do plano?')
+
+          # Verifica keys obrigatórias
+          required_keys = {'agent_used', 'response', 'hitl_required', 'session_id',
+                           'confidence', 'hitl_reason', 'handoff_occurred', 'handoff_log'}
+          for key in required_keys:
+              assert key in result, f'Key ausente: {key}'
+
+          assert result['agent_used'] == 'vendas'
+          assert isinstance(result['response'], str)
+          assert isinstance(result['hitl_required'], bool)
+          assert isinstance(result['session_id'], str)
+          assert isinstance(result['handoff_log'], list)
+
+          # Segunda mensagem na mesma sessão — memória deve acumular
+          result2 = pipeline.run('Tenho um erro', session_id=result['session_id'])
+          assert result2['agent_used'] == 'suporte'
+          assert result2['session_id'] == result['session_id']
+
+          history = memory.get(result['session_id'])
+          assert len(history) >= 4  # 2 user + 2 assistant
+
+          print('Pipeline: OK')
+          "
+
+      - name: Todos os testes passaram
+        run: echo "CI verde — orquestrador multi-agente funcionando corretamente"
