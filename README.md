@@ -213,5 +213,234 @@ Para confiança dinâmica, você pode usar o campo `stop_reason` ou implementar 
 
 ## Desenvolvido por
 
-**CD Tech** — Automação e agentes IA para pequenos negócios  
+**CD Tech** — Automação e agentes IA para pequenos negócios
 [dimitrearaujo@gmail.com](mailto:dimitrearaujo@gmail.com) | Fortaleza, CE
+
+---
+
+<details>
+<summary>🇺🇸 English</summary>
+
+# agent-orchestrator-python
+
+[![CI](https://github.com/dimitrearaujo/agent-orchestrator-python/actions/workflows/ci.yml/badge.svg)](https://github.com/dimitrearaujo/agent-orchestrator-python/actions/workflows/ci.yml)
+
+Pure Python multi-agent orchestrator with session memory, intent-based routing, context-preserving handoff and Human-in-the-Loop.
+
+---
+
+## Orchestration Flow
+
+```
+                        ┌─────────────────────────────────────────────┐
+                        │              PIPELINE (pipeline.py)          │
+                        │                                              │
+  User input            │   ┌──────────┐     ┌─────────────────────┐  │
+  ────────────────►     │   │  ROUTER  │────►│  Selected AGENT     │  │
+                        │   │(router.py│     │    (agent.py)        │  │
+                        │   └──────────┘     └────────┬────────────┘  │
+                        │                             │ response       │
+                        │   ┌──────────┐              │                │
+                        │   │ MEMORY   │◄─────────────┘                │
+                        │   │(memory.py│  saves input + response       │
+                        │   └──────────┘                               │
+                        │        │ low confidence?                    │
+                        │        ▼                                      │
+                        │   ┌──────────┐                               │
+                        │   │ HANDOFF  │  transfers with context       │
+                        │   │(handoff  │  to fallback agent            │
+                        │   │  .py)    │                               │
+                        │   └──────────┘                               │
+                        │        │                                      │
+                        │        ▼                                      │
+                        │   ┌──────────┐                               │
+                        │   │  HITL    │  flags if human               │
+                        │   │(hitl.py) │  review is needed              │
+                        │   └──────────┘                               │
+                        │        │                                      │
+                        └────────┼─────────────────────────────────────┘
+                                 │
+                                 ▼
+                        Structured output:
+                        {agent_used, response, hitl_required, session_id, ...}
+```
+
+---
+
+## Project Structure
+
+```
+agent-orchestrator-python/
+├── .env.example              # Required environment variables
+├── .gitignore
+├── .github/workflows/ci.yml  # CI with syntax check + inline tests
+├── README.md
+├── requirements.txt
+├── main.py                   # Demo with 3 agents: sales, support, finance
+└── orchestrator/
+    ├── __init__.py
+    ├── agent.py              # Base Agent class
+    ├── memory.py             # In-memory session memory
+    ├── router.py             # Keyword/intent-based router
+    ├── handoff.py            # Transfer between agents
+    ├── hitl.py               # Human-in-the-Loop
+    └── pipeline.py           # Full flow orchestrator
+```
+
+---
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/dimitrearaujo/agent-orchestrator-python.git
+cd agent-orchestrator-python
+
+# Create the virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment variables
+cp .env.example .env
+# Edit .env with your ANTHROPIC_API_KEY
+```
+
+---
+
+## Quick Usage
+
+```bash
+# Run the demo with 3 agents
+python main.py
+```
+
+### Programmatic usage
+
+```python
+from orchestrator import Agent, SessionMemory, Router, HandoffManager, HITLChecker, Pipeline
+
+# 1. Define the agents
+sales = Agent("sales", "salesperson", "You are a sales specialist.", confidence=0.92)
+support = Agent("support", "technical support", "You solve technical problems.", confidence=0.85)
+
+# 2. Configure the router
+router = Router([sales, support], default_agent=support)
+router.register_keywords("sales", ["price", "plan", "sign up"])
+router.register_keywords("support", ["error", "bug", "problem"])
+
+# 3. Build the pipeline
+memory = SessionMemory()
+handoff = HandoffManager(memory)
+hitl = HITLChecker(confidence_threshold=0.75)
+pipeline = Pipeline(router, memory, handoff, hitl)
+
+# 4. Run
+result = pipeline.run("What's the price of the plan?")
+print(result["agent_used"])    # "sales"
+print(result["hitl_required"]) # False
+print(result["response"])      # Sales agent's response
+```
+
+---
+
+## How to Add New Agents
+
+1. Create an `Agent` instance with a unique name, role and system_prompt:
+
+```python
+from orchestrator import Agent
+
+legal_agent = Agent(
+    name="legal",
+    role="legal consultant specialized in contracts",
+    system_prompt="You are a lawyer specialized in SaaS contracts...",
+    confidence=0.80,
+)
+```
+
+2. Add it to the `Router` and register keywords:
+
+```python
+router = Router([legal_agent, ...], default_agent=support_agent)
+router.register_keywords("legal", ["contract", "clause", "termination", "penalty"])
+```
+
+3. Done. The pipeline automatically routes to the new agent.
+
+---
+
+## How to Integrate with the Claude API (Real Mode)
+
+Replace the mock method in `orchestrator/agent.py` with the real call:
+
+```python
+# orchestrator/agent.py
+from anthropic import Anthropic
+
+client = Anthropic()  # uses ANTHROPIC_API_KEY from the environment
+
+def run(self, user_input: str, context=None) -> dict:
+    messages = list(context or [])
+    # Remove 'system' messages from history (not accepted in messages)
+    messages = [m for m in messages if m["role"] in ("user", "assistant")]
+    messages.append({"role": "user", "content": user_input})
+
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=1024,
+        system=self.system_prompt,
+        messages=messages,
+    )
+    return {
+        "response": response.content[0].text,
+        "confidence": self.confidence,
+    }
+```
+
+For dynamic confidence, you can use the `stop_reason` field or implement a confidence classifier based on the response content.
+
+---
+
+## Pure Python vs LangChain/LangFlow
+
+| Criteria | Pure Python (this project) | LangChain / LangFlow |
+|---|---|---|
+| Dependencies | 2 (`anthropic`, `python-dotenv`) | 50+ packages |
+| Boot time | < 0.1s | 2–5s |
+| Debuggability | Direct stack trace | Opaque abstractions |
+| Flexibility | Full control of the flow | Limited to the abstractions |
+| Learning curve | Standard Python | Proprietary API |
+| Custom handoff | Implemented in ~30 lines | Complex workaround |
+| Vendor lock-in | Zero | High (LangSmith, etc.) |
+| Production | Direct on the server | Extra overhead |
+
+**When to use this project:** you need full control, auditable code, maximum performance and zero unnecessary dependencies.
+
+**When to use LangChain:** you want to integrate 20+ ready-made tools quickly and overhead isn't a problem.
+
+---
+
+## Configuration via `.env`
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Claude API key (required for real mode) |
+| `HITL_CONFIDENCE_THRESHOLD` | `0.75` | Minimum confidence for automatic approval |
+| `HANDOFF_THRESHOLD` | `0.50` | Minimum confidence to avoid automatic handoff |
+| `DEFAULT_AGENT` | `support` | Default agent when no keyword matches |
+
+---
+
+## Developed by
+
+**CD Tech** — AI Automation & Agents for Small Businesses
+[dimitrearaujo@gmail.com](mailto:dimitrearaujo@gmail.com) | Fortaleza, Brazil
+
+</details>
+
+---
+
+[← Back to profile](https://github.com/Dimitrearaujo)
