@@ -1,4 +1,4 @@
-# agent-orchestrator-python
+# Multi-Agent Orchestrator in Python
 
 [![CI](https://github.com/dimitrearaujo/agent-orchestrator-python/actions/workflows/ci.yml/badge.svg)](https://github.com/dimitrearaujo/agent-orchestrator-python/actions/workflows/ci.yml)
 
@@ -221,7 +221,7 @@ For dynamic confidence, you can use the `stop_reason` field or implement a confi
 <details>
 <summary>🇧🇷 Português</summary>
 
-## agent-orchestrator-python
+## Orquestrador Multi-Agente em Python
 
 [![CI](https://github.com/dimitrearaujo/agent-orchestrator-python/actions/workflows/ci.yml/badge.svg)](https://github.com/dimitrearaujo/agent-orchestrator-python/actions/workflows/ci.yml)
 
